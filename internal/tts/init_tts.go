@@ -3,14 +3,40 @@ package tts
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
+	"os"
+	"os/signal"
+	"regexp"
+	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	oto "github.com/ebitengine/oto/v3"
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 )
+
+
+func sanitizeForTTS(text string) string {
+	text = strings.ReplaceAll(text, "*", "")
+	text = strings.ReplaceAll(text, "#", "")
+	text = strings.ReplaceAll(text, "_", "")
+	text = strings.ReplaceAll(text, "!", ".")
+	text = strings.ReplaceAll(text, "?", ".")
+	safeChars := regexp.MustCompile(`[^a-zA-Z0-9\s.,'":;-]`)
+	text = safeChars.ReplaceAllString(text, "")
+	text = strings.ReplaceAll(text, "..", ".")
+	text = strings.TrimSpace(text)
+	text = strings.Join(strings.Fields(text), " ")
+	text = strings.ReplaceAll(text, "\n", " ")
+	fmt.Println(text)
+
+	return text
+}
+
 
 type pcmBuffer struct {
 	mu       sync.Mutex
@@ -127,20 +153,11 @@ func StartSpeachEngine() *SpeechService {
 }
 
 // Speak generates the audio and plays it immediately.
-// Speak generates the audio and plays it immediately.
 func (s *SpeechService) Speak(text string, speakerID int) {
 	log.Println("AI Generating speech...")
 	cfg := sherpa.GenerationConfig{
 		Speed: 1.0,
 		Sid:   speakerID,
-	}
-
-	// 1. Generate the ENTIRE audio block first (No callback needed for Offline models)
-	generated := s.Engine.GenerateWithConfig(text, &cfg, nil)
-
-	if generated == nil || len(generated.Samples) == 0 {
-		log.Println("Error: AI failed to generate speech.")
-		return
 	}
 
 	// 2. Setup the Buffer and Reader
@@ -154,27 +171,62 @@ func (s *SpeechService) Speak(text string, speakerID int) {
 	player := s.otoContext.NewPlayer(reader)
 	player.Play()
 
-	// 4. Convert float32 samples to Int16 bytes safely
-	buf := make([]byte, len(generated.Samples)*2)
-	for i, sample := range generated.Samples {
-		// Prevent audio clipping (popping noises)
-		if sample > 1 {
-			sample = 1
-		} else if sample < -1 {
-			sample = -1
-		}
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-		v := int16(math.Round(float64(sample * 32767.0)))
-		binary.LittleEndian.PutUint16(buf[i*2:], uint16(v))
+	// Variable for saving audio files
+	// var generated *sherpa.GeneratedAudio
+
+	start := time.Now()
+	text = sanitizeForTTS(text)
+
+	go func() {
+		defer pcmBuf.Finish()
+
+		// generated = 
+		s.Engine.GenerateWithConfig(
+			text,
+			&cfg,
+			func(samples []float32, progress float32) bool {
+				log.Printf("Progress: %.1f%%", progress*100)
+
+				buf := make([]byte, len(samples)*2)
+				for i, s := range samples {
+					if s > 1 {
+						s = 1
+					} else if s < -1 {
+						s = -1
+					}
+					v := int16(math.Round(float64(s * 32767)))
+					binary.LittleEndian.PutUint16(buf[i*2:], uint16(v))
+				}
+
+				pcmBuf.Push(buf)
+				return true
+			},
+		)
+
+		log.Println("TTS generation finished in", time.Since(start))
+	}()
+
+	select {
+	case <-stop:
+		log.Println("Interrupted")
+	case <-reader.done:
+		log.Println("Playback finished")
 	}
 
-	// 5. Push the entire audio block and immediately close the buffer
-	pcmBuf.Push(buf)
-	pcmBuf.Finish()
+	// If you want to save audio to a file
+	/*if generated != nil {
+		if ok := generated.Save(filename); !ok {
+			log.Println("Failed to save audio")
+		} else {
+			log.Println("Saved generated audio to", filename)
+		}
+	}*/
 
-	// 6. Wait for the audio to finish playing out of the speakers
-	<-reader.done
+	// let remaining audio drain
+	time.Sleep(800 * time.Millisecond)
 
-	player.Close()
-	log.Println("Finished speaking.")
+	log.Println("Done")
 }

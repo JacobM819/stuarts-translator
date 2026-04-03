@@ -5,14 +5,13 @@ import (
 	"context"
 	"fmt"
 	"google.golang.org/genai"
-	"translator/internal/tts"
 	"log"
 	"os"
+	"translator/internal/tts"
 )
 
 func InitLLM(engine *tts.SpeechService, enable_tts bool) error {
 	api_key := os.Getenv("GEMINI_API_KEY")
-	fmt.Println(api_key)
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: api_key})
 	if err != nil {
@@ -33,7 +32,7 @@ func InitLLM(engine *tts.SpeechService, enable_tts bool) error {
 			break
 		}
 		fmt.Println(result.Text())
-		engine.Speak(result.Text(), 0)
+		engine.Speak(result.Text(), 5)
 	}
 
 	return err
@@ -61,7 +60,7 @@ func prompt_llm(client *genai.Client, ctx context.Context, c chan string) (*gena
 
 	result, err := client.Models.GenerateContent(
 		ctx,
-		"gemini-3-flash-preview",
+		"gemini-2.5-flash-lite",
 		genai.Text(prompt),
 		nil,
 	)
