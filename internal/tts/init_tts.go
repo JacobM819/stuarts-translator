@@ -2,41 +2,24 @@ package tts
 
 import (
 	"encoding/binary"
-	"errors"
-	"fmt"
 	"io"
 	"log"
 	"math"
 	"os"
 	"os/signal"
-	"regexp"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	oto "github.com/ebitengine/oto/v3"
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
+	flag "github.com/spf13/pflag"
 )
 
-
-func sanitizeForTTS(text string) string {
-	text = strings.ReplaceAll(text, "*", "")
-	text = strings.ReplaceAll(text, "#", "")
-	text = strings.ReplaceAll(text, "_", "")
-	text = strings.ReplaceAll(text, "!", ".")
-	text = strings.ReplaceAll(text, "?", ".")
-	safeChars := regexp.MustCompile(`[^a-zA-Z0-9\s.,'":;-]`)
-	text = safeChars.ReplaceAllString(text, "")
-	text = strings.ReplaceAll(text, "..", ".")
-	text = strings.TrimSpace(text)
-	text = strings.Join(strings.Fields(text), " ")
-	text = strings.ReplaceAll(text, "\n", " ")
-	fmt.Println(text)
-
-	return text
+type SpeechService struct {
+	Engine     *sherpa.OfflineTts
+	otoContext *oto.Context
 }
-
 
 type pcmBuffer struct {
 	mu       sync.Mutex
@@ -110,81 +93,77 @@ func (r *pcmReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// SpeechService holds the AI model and the speaker context
-type SpeechService struct {
-	Engine     *sherpa.OfflineTts
-	otoContext *oto.Context
-}
-
-// NewSpeechService initializes the model ONCE.
-func StartSpeachEngine() *SpeechService {
+func InitTts() *SpeechService {
 	config := sherpa.OfflineTtsConfig{}
-	// Update these paths to where you saved the models in your project
 	config.Model.Kokoro.Model = "./internal/tts/assets/model.onnx"
 	config.Model.Kokoro.Voices = "./internal/tts/assets/voices.bin"
 	config.Model.Kokoro.Tokens = "./internal/tts/assets/tokens.txt"
-	config.Model.Kokoro.DataDir = "./internal/tts/assets/espeak-ng-data"
+	config.Model.Kokoro. DataDir = "./internal/tts/assets/espeak-ng-data"
 	config.Model.NumThreads = 4
 
-	var err error
+	sid := 0
 
-	engine := sherpa.NewOfflineTts(&config)
-	if engine == nil {
-		err = errors.New("Could not initialize TTS engine. Check file paths.")
-		log.Fatal(err)
+	flag.Parse()
+
+	log.Println("Speaker ID:", sid)
+
+	log.Println("Initializing model (may take several seconds)")
+	tts := sherpa.NewOfflineTts(&config)
+
+	if tts == nil {
+		log.Fatal("Failed to create TTS engine. Check if config filepaths are correct.")
 	}
 
-	// Initialize the speaker context
+
+	log.Println("Model created!")
+
 	ctx, ready, err := oto.NewContext(&oto.NewContextOptions{
-		SampleRate:   engine.SampleRate(),
+		SampleRate:   tts.SampleRate(),
 		ChannelCount: 1,
 		Format:       oto.FormatSignedInt16LE,
 	})
-	if err != nil {
-		err = errors.New("Failed to init audio context:")
-		log.Fatal("Failed to init audio context:", err)
-	}
-	<-ready // Wait for audio hardware to be ready
 
-	return &SpeechService{
-		Engine:     engine,
+	<-ready
+
+	if err != nil {
+		log.Fatal(err)
+	}
+	ss := &SpeechService{
+		Engine: tts,
 		otoContext: ctx,
 	}
+	return ss
 }
 
-// Speak generates the audio and plays it immediately.
-func (s *SpeechService) Speak(text string, speakerID int) {
-	log.Println("AI Generating speech...")
-	cfg := sherpa.GenerationConfig{
-		Speed: 1.0,
-		Sid:   speakerID,
-	}
+func (ss *SpeechService) Speak(text string, voice int) {
 
-	// 2. Setup the Buffer and Reader
 	pcmBuf := newPCMBuffer()
+
 	reader := &pcmReader{
 		buf:  pcmBuf,
 		done: make(chan struct{}),
 	}
 
-	// 3. Start Playing
-	player := s.otoContext.NewPlayer(reader)
+	player := ss.otoContext.NewPlayer(reader)
 	player.Play()
+	defer player.Close()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	// Variable for saving audio files
 	// var generated *sherpa.GeneratedAudio
 
 	start := time.Now()
-	text = sanitizeForTTS(text)
+	cfg := sherpa.GenerationConfig{
+		SilenceScale: 0.2,
+		Speed:        1.0,
+		Sid:          voice,
+	}
 
 	go func() {
 		defer pcmBuf.Finish()
 
-		// generated = 
-		s.Engine.GenerateWithConfig(
+		ss.Engine.GenerateWithConfig(
 			text,
 			&cfg,
 			func(samples []float32, progress float32) bool {
@@ -215,8 +194,7 @@ func (s *SpeechService) Speak(text string, speakerID int) {
 	case <-reader.done:
 		log.Println("Playback finished")
 	}
-
-	// If you want to save audio to a file
+	// For saving audio to file
 	/*if generated != nil {
 		if ok := generated.Save(filename); !ok {
 			log.Println("Failed to save audio")

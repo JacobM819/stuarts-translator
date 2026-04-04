@@ -17,11 +17,10 @@ func main() {
 	
 	if err != nil {
 		log.Error(err)
-
 	}
 
-	var tts_engine = tts.StartSpeachEngine()
-	tts_engine.Speak("this is a test", 0)
+	var tts_engine = tts.InitTts()
+	tts_engine.Speak("The quick brown fox jumped over the lazy dog", 10)
 
 	// Initialize prompt listening
 	var enable_tts = true

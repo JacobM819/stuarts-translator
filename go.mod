@@ -7,6 +7,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/k2-fsa/sherpa-onnx-go v1.12.34
 	github.com/sirupsen/logrus v1.9.4
+	github.com/spf13/pflag v1.0.10
 	google.golang.org/genai v1.52.0
 )
 
